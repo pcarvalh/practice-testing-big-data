@@ -1,0 +1,817 @@
+---
+title: "Practice Testing Big Data Analyses"
+output:
+  html_document:
+    number_sections: yes
+    toc: yes
+  pdf_document:
+    toc: yes
+---
+```{r Setup, include=FALSE}
+rm(list=ls())
+library(readr)
+library(lmerTest)
+library(plyr)
+library(psych)
+library(sjPlot)
+library(car)
+library(gridExtra)
+library(MuMIn)
+library(data.table)
+library(sciplot)
+library(lattice)
+library(dplyr)
+library(ggplot2)
+library(optimx)
+library(sjstats)
+library(tidyverse)
+library(lubridate)
+library(ggpubr)
+```
+
+# Import datasets and merge all datasets
+```{r}
+#import
+SumData_ds863 <- read_csv("measures/SumData_ds863_rev.csv")
+
+SumData_ds2033 <- read_csv("measures/SumData_ds2033_rev.csv")
+
+SumData_ds490 <- read_csv("/measures/SumData_ds490_rev.csv")
+
+#merge
+dbs <-  rbind(SumData_ds863,SumData_ds2033,SumData_ds490)
+dbs <- dbs %>% distinct(ds_anon_user_id, module, .keep_all = TRUE)
+as.data.table(dbs)
+
+
+```
+
+# Add variables not in dataset yet
+```{r}
+dbs$time_perPage <-  dbs$TimeReadTrimmed/dbs$NRead_trimmed
+dbs$time_perDo <-  dbs$TimeAction/dbs$NAction
+dbs$time_perPage <-  ifelse(is.na(dbs$time_perPage),0,dbs$time_perPage)
+dbs$time_perDo <-   ifelse(is.na(dbs$time_perDo),0,dbs$time_perDo)
+
+dbs$time_perPage <-  ifelse(is.infinite(dbs$time_perPage),0,dbs$time_perPage)
+dbs$time_perDo <-   ifelse(is.infinite(dbs$time_perDo),0,dbs$time_perDo)
+
+dbs$correctness_alltries <- ifelse(is.na(dbs$correctness_alltries),0,dbs$correctness_alltries)      
+dbs$correctness_firsttry <- ifelse(is.na(dbs$correctness_firsttry),0,dbs$correctness_alltries)            
+dbs$meanAttempts <- ifelse(is.na(dbs$meanAttempts),0,dbs$correctness_alltries)
+
+dbs$repeated_activities <- dbs$NAction - dbs$NAction_unique
+dbs$repeated_pages <- dbs$NRead_trimmed - dbs$NRead_trimmed_unique
+dbs$alternation <- dbs$CountActionToPage + dbs$CountPageToAction
+
+dbs$percentActivities <- ifelse(is.na(dbs$percentActivities),0,dbs$percentActivities)
+dbs$percentPages <- ifelse(is.na(dbs$percentPages),0,dbs$percentPages)
+
+dbs$percentActivities <- ifelse(dbs$percentActivities=="Inf",0,dbs$percentActivities)
+dbs$percentPages <- ifelse(dbs$percentPages=="Inf",0,dbs$percentPages)
+
+dbs$activity_group <- ifelse(dbs$NAction>0,"2_Activities","1_No Activities")
+dbs$read_group <- ifelse(dbs$NRead_trimmed>0,"2_Read","1_No Read")
+
+```
+
+# Descriptives for the dataset
+```{r}
+describe(dbs)
+describeBy(x = dbs,group = dbs$domain)
+describeBy(x = dbs,group = dbs$dataset)
+descriptivesPsych <- describe(dbs[dbs$domain=="psych",])
+descriptivesComputing <- describe(dbs[dbs$domain=="computing",])
+
+write.csv(descriptivesPsych,file = "DescriptivesPsych.csv",row.names = TRUE)
+write.csv(descriptivesComputing,file = "DescriptivesComputing.csv",row.names = TRUE)
+```
+
+# Normalize things
+```{r}
+dbs <- ddply(.data = dbs,.variables = .(dataset),.fun = mutate,
+             zNRead = scale(NRead),
+             zNread_unique=scale(NRead_unique),
+             zNRead_trimmed=scale(NRead_trimmed),
+             zNRead_trimmed_unique=scale(NRead_trimmed_unique),
+             zNAction=scale(NAction),zNAction_unique=scale(NAction_unique),
+             logTimeRead = log(TimeRead),
+             logTimeReadTrimmed=log(TimeReadTrimmed),
+             logTimeAction=log(TimeAction),
+             logTimeActionToPage=log(TimeActionToPage),
+             logTimePageToAction=log(TimePageToAction),
+             zCountActionToPage=scale(CountActionToPage),
+             zCountPageToAction=scale(CountPageToAction),
+             zreading_rate=scale(reading_rate),
+             zpercentActivities=scale(percentActivities),
+             zpercentPages=scale(percentPages),
+             logretention_interval=log(retention_interval),
+             zcorrectness_alltries=scale(correctness_alltries),
+             zcorrectness_firsttry=scale(correctness_firsttry),
+             zmeanAttempts=scale(meanAttempts),
+             zpretestGrade=scale(pretestGrade),
+             zquizGrade=scale(quizGrade),
+             zexamGrade=scale(examGrade),
+             logtime_perPage=log(time_perPage),
+             logtime_perDo=log(time_perDo),
+             zrepeated_activities=scale(repeated_activities),
+             zrepeated_pages=scale(repeated_pages),
+             zalternation=scale(alternation),
+             .progress = "text")
+
+is.na(dbs) <- do.call(cbind,lapply(dbs, is.infinite))
+```
+
+# Check variability for each domain/dataset
+```{r}
+var_db_psych <- ddply(.data = dbs[dbs$dataset=="ds863",],.variables = .(ds_anon_user_id),.fun = summarize,cv_do=sd(NAction,na.rm = T)/mean(NAction,na.rm = T),cv_read=sd(NRead_trimmed,na.rm = T)/mean(NRead_trimmed,na.rm = T),sd_do=sd(NAction,na.rm = T),sd_read=sd(NRead_trimmed,na.rm = T))
+var_db_psych
+mean(var_db_psych$sd_do,na.rm=T)
+min(var_db_psych$sd_do,na.rm=T)
+max(var_db_psych$sd_do,na.rm=T)
+mean(var_db_psych$sd_read,na.rm=T)
+
+var_module_db_psych <- ddply(.data = dbs[dbs$dataset=="ds863",],.variables = .(module),.fun = summarize,cv_do=sd(NAction)/mean(NAction),cv_read=sd(NRead_trimmed)/mean(NRead_trimmed),sd_do=sd(NAction),sd_read=sd(NRead_trimmed))
+var_module_db_psych
+mean(var_module_db_psych$sd_do,na.rm=T)
+min(var_module_db_psych$sd_do)
+max(var_module_db_psych$sd_do)
+mean(var_module_db_psych$sd_read)
+
+var_db_ccm <- ddply(.data = dbs[!dbs$dataset=="ds863",],.variables = .(ds_anon_user_id),.fun = summarize,cv_do=sd(NAction,na.rm = T)/mean(NAction,na.rm = T),cv_read=sd(NRead_trimmed,na.rm = T)/mean(NRead_trimmed,na.rm = T),sd_do=sd(NAction,na.rm = T),sd_read=sd(NRead_trimmed,na.rm = T))
+var_db_ccm
+
+var_module_db_ccm <- ddply(.data = dbs[!dbs$dataset=="ds863",],.variables = .(module),.fun = summarize,cv_do=sd(NAction)/mean(NAction),cv_read=sd(NRead_trimmed)/mean(NRead_trimmed),sd_do=sd(NAction),sd_read=sd(NRead_trimmed))
+var_module_db_ccm
+
+```
+
+# HISTOGRAMS
+```{r}
+p <- ddply(.data = dbs,.variables = .(ds_anon_user_id,dataset),.fun = mutate,byModule=ifelse(quizGrade>mean(quizGrade),"Above","Below"))
+
+p <- ddply(.data = p,.variables = .(module,dataset),.fun = mutate,byStudent=ifelse(quizGrade>mean(quizGrade),"Above","Below"))
+
+ggplot(p, aes(x=percentActivities,color=byModule)) + geom_histogram(position="identity") +  facet_wrap(. ~ domain,nrow=1) +  labs(title = "Analyses by Workspace",y="N Students",x="% Activities") + geom_histogram(fill="white")
+
+ggplot(p, aes(x=percentPages,color=byModule)) + geom_histogram(position="identity") +  facet_wrap(. ~ domain,nrow=1) +  labs(title = "Analyses by Workspace",y="N Students",x="% Pages") + geom_histogram(fill="white")
+
+ggplot(p, aes(x=percentActivities,color=byStudent)) + geom_histogram(position="identity") +  facet_wrap(. ~ domain,nrow=1) +  labs(title = "Analyses by Workspace",y="N Students",x="% Activities") + geom_histogram(fill="white")
+
+ggplot(p, aes(x=percentPages,color=byStudent)) + geom_histogram(position="identity") +  facet_wrap(. ~ domain,nrow=1) +  labs(title = "Analyses by Workspace",y="N Students",x="% Pages") + geom_histogram(fill="white")
+
+ggplot(data = dbs, aes(x=percentPages*100)) + geom_histogram(position="identity") +  facet_wrap(. ~ domain,nrow=1) +  labs(title = "Pages Viewed",y="# Students-Module pairs",x="% Pages") + geom_histogram(fill="grey")
+
+ggplot(data = dbs, aes(x=percentActivities*100)) + geom_histogram(position="identity") +  facet_wrap(. ~ domain,nrow=1) +  labs(title = "Activities Completed",y="# Students-Module pairs",x="% Activities") + geom_histogram(fill="grey")
+
+ggplot(data = dbs, aes(x=quizGrade*100)) + geom_histogram(position="identity") +  facet_wrap(. ~ domain,nrow=1) +  labs(title = "Quiz Grades",y="# Students-Module pairs",x="Quiz Grade") + geom_histogram(fill="grey")
+
+ggplot(data = dbs, aes(x=pretestGrade*100)) + geom_histogram(position="identity") +  facet_wrap(. ~ domain,nrow=1) +  labs(title = "Pretest Scores",y="# Students-Module pairs",x="Pretest Score") + geom_histogram(fill="grey")
+
+ggplot(data = dbs, aes(x=log(retention_interval))) + geom_histogram(position="identity") +  facet_wrap(. ~ domain,nrow=1) +  labs(title = "Retention Interval",y="# Students-Module pairs",x="Log(Retention Interval)") + geom_histogram(fill="grey")
+
+p <- as.data.table(dbs)[,.(nquizzes=length(module)),by=.(ds_anon_user_id,domain)]
+ggplot(data = p, aes(x=nquizzes)) + geom_histogram(position="identity") +  facet_wrap(. ~ domain,nrow=1) +  labs(title = "Number of Modules Completed",y="# Students",x="Quiz Grade") + geom_histogram(fill="grey")
+
+ggarrange(problems, time, common.legend = TRUE, ncol = 1, nrow = 2, legend = "bottom")
+
+```
+
+## Psych
+```{r}
+psych_pages <- ggplot(data = dbs[dbs$domain=="psych",], aes(x=percentPages*100)) + geom_histogram(position="identity") +  labs(title = "b Pages Viewed",y="# Students-Module pairs",x="% Pages") + geom_histogram(fill="grey")
+
+psych_act <- ggplot(data = dbs[dbs$domain=="psych",], aes(x=percentActivities*100)) + geom_histogram(position="identity") + labs(title = "a Activities Completed",y="# Students-Module pairs",x="% Activities") + geom_histogram(fill="grey")
+
+psych_rep_pages <- ggplot(data = dbs[dbs$domain=="psych",], aes(x=repeated_pages)) + geom_histogram(position="identity") +  labs(title = "d Repeated Pages",y="# Students-Module pairs",x="# Repeated Pages") + geom_histogram(fill="grey")
+
+psych_rep_act <- ggplot(data = dbs[dbs$domain=="psych",], aes(x=repeated_activities)) + geom_histogram(position="identity") +  labs(title = "c Repeated Activities",y="# Students-Module pairs",x="# Repeated Activities") + geom_histogram(fill="grey")
+
+psych_quiz <- ggplot(data = dbs[dbs$domain=="psych",], aes(x=quizGrade*100)) + geom_histogram(position="identity") +  labs(title = "g Quiz Grades",y="# Students-Module pairs",x="Quiz Grade") + geom_histogram(fill="grey")
+
+psych_pretest <- ggplot(data = dbs[dbs$domain=="psych",], aes(x=pretestGrade*100)) + geom_histogram(position="identity") +  labs(title = "f Pretest Scores",y="# Students-Module pairs",x="Pretest Score") + geom_histogram(fill="grey")
+
+psych_retention <- ggplot(data = dbs[dbs$domain=="psych",], aes(x=log(retention_interval))) + geom_histogram(position="identity") +  labs(title = "h Retention Interval",y="# Students-Module pairs",x="Log(Retention Interval)") + geom_histogram(fill="grey")
+
+p <- as.data.table(dbs)[domain=="psych",.(nquizzes=length(module)),by=.(ds_anon_user_id,domain)]
+psych_numberquizzes <-  ggplot(data = p, aes(x=nquizzes)) + geom_histogram(position="identity") +  labs(title = "e Number of Modules Completed",y="# Students",x="Number of Quizzes") + geom_histogram(fill="grey")
+
+ggarrange(psych_act, psych_pages, psych_rep_act, psych_rep_pages,  psych_numberquizzes,psych_pretest, psych_quiz, psych_retention, common.legend = TRUE, ncol = 2, nrow = 4, legend = "bottom")
+
+```
+
+## Computing
+```{r}
+computing_pages <- ggplot(data = dbs[dbs$domain=="c@cm",], aes(x=percentPages*100)) + geom_histogram(position="identity") +  labs(title = "b Pages Viewed",y="# Students-Module pairs",x="% Pages") + geom_histogram(fill="grey")
+
+computing_act <- ggplot(data = dbs[dbs$domain=="c@cm",], aes(x=percentActivities*100)) + geom_histogram(position="identity") + labs(title = "a Activities Completed",y="# Students-Module pairs",x="% Activities") + geom_histogram(fill="grey")
+
+computing_rep_pages <- ggplot(data = dbs[dbs$domain=="c@cm",], aes(x=repeated_pages)) + geom_histogram(position="identity") +  labs(title = "d Repeated Pages",y="# Students-Module pairs",x="# Repeated Pages") + geom_histogram(fill="grey")
+
+computing_rep_act <- ggplot(data = dbs[dbs$domain=="c@cm",], aes(x=repeated_activities)) + geom_histogram(position="identity") +  labs(title = "c Repeated Activities",y="# Students-Module pairs",x="# Repeated Activities") + geom_histogram(fill="grey")
+
+computing_quiz <- ggplot(data = dbs[dbs$domain=="c@cm",], aes(x=quizGrade*100)) + geom_histogram(position="identity") +  labs(title = "g Quiz Grades",y="# Students-Module pairs",x="Quiz Grade") + geom_histogram(fill="grey")
+
+computing_pretest <- ggplot(data = dbs[dbs$domain=="c@cm",], aes(x=pretestGrade*100)) + geom_histogram(position="identity") +  labs(title = "f Pretest Scores",y="# Students-Module pairs",x="Pretest Score") + geom_histogram(fill="grey")
+
+computing_retention <- ggplot(data = dbs[dbs$domain=="c@cm",], aes(x=log(retention_interval))) + geom_histogram(position="identity") +  labs(title = "h Retention Interval",y="# Students-Module pairs",x="Log(Retention Interval)") + geom_histogram(fill="grey")
+
+p <- as.data.table(dbs)[domain=="c@cm",.(nquizzes=length(module)),by=.(ds_anon_user_id,domain)]
+computing_numberquizzes <-  ggplot(data = p, aes(x=nquizzes)) + geom_histogram(position="identity") +  labs(title = "e Number of Modules Completed",y="# Students",x="Number of Quizzes") + geom_histogram(fill="grey")
+
+ggarrange(computing_act, computing_pages, computing_rep_act, computing_rep_pages,  computing_numberquizzes,computing_pretest, computing_quiz, computing_retention, common.legend = TRUE, ncol = 2, nrow = 4, legend = "bottom")
+
+```
+
+# STUDY 1: PSYCH COURSE
+
+## What is the effect of completing more activities vs. viewing more pages?
+```{r}
+## plot performance by number of activities completed
+dbs_psych <-  dbs[dbs$dataset=="ds863",]
+dbs_psych <- mutate(dbs_psych,quantile_naction=ntile(dbs_psych$NAction,10))
+dbs_psych <- as.data.table(dbs_psych)
+
+dbs_psych_sum <- dbs_psych[,.(grade=mean(quizGrade),naction_avg=mean(NAction),n=.N),by=.(quantile_naction)]
+
+activities_psych <- ggplot(data=dbs_psych_sum, aes(x=naction_avg, y=grade)) + geom_point(aes(size = n/100)) + theme_classic() + xlab("Number of Activities Completed") + ylab("Quiz Grade") + scale_linetype(name="Retention Interval Quintile") + scale_shape_discrete(name="Retention Interval Quintile") + theme(legend.justification=c(1,0), legend.position="none",plot.title = element_text(hjust = 0.5)) + ggtitle("Practice") + coord_cartesian(ylim=c(0.70,0.95)) + geom_smooth(method = "lm") + scale_size_identity()
+activities_psych
+
+## plot performance by % of activities completed
+
+dbs_psych <-  dbs[dbs$dataset=="ds863",]
+dbs_psych <- mutate(dbs_psych,quantile_naction=ntile(dbs_psych$percentActivities,10))
+dbs_psych <- as.data.table(dbs_psych)
+
+dbs_psych_sum <- dbs_psych[,.(grade=mean(quizGrade),naction_avg=mean(percentActivities)*100,n=.N),by=.(quantile_naction)]
+
+activities_psych <- ggplot(data=dbs_psych_sum, aes(x=naction_avg, y=grade)) + geom_point(aes(size = n/100)) + theme_classic() + xlab("% of Activities Completed") + ylab("Quiz Grade") + scale_linetype(name="Retention Interval Quintile") + scale_shape_discrete(name="Retention Interval Quintile") + theme(legend.justification=c(1,0), legend.position="none",plot.title = element_text(hjust = 0.5)) + ggtitle("Practice") + coord_cartesian(ylim=c(0.70,0.95)) + geom_smooth(method = "lm") + scale_size_identity()
+activities_psych
+
+## plot performance by number of pages accessed
+
+dbs_psych <-  dbs[dbs$dataset=="ds863",]
+dbs_psych <- mutate(dbs_psych,quantile_nread=ntile(dbs_psych$NRead_trimmed,10))
+dbs_psych <- as.data.table(dbs_psych)
+
+dbs_psych_sum <- dbs_psych[,.(grade=mean(quizGrade),nread_avg=mean(NRead_trimmed),n=.N),by=.(quantile_nread)]
+
+library(ggplot2)
+read_psych <- ggplot(data=dbs_psych_sum, aes(x=nread_avg, y=grade)) + geom_point(aes(size = n/100)) + theme_classic() + xlab("Number of Pages Viewed") + ylab("Quiz Grade") + scale_linetype(name="Retention Interval Quintile") + scale_shape_discrete(name="Retention Interval Quintile") + theme(legend.justification=c(1,0), legend.position="none",plot.title = element_text(hjust = 0.5)) + ggtitle("Reading") + coord_cartesian(ylim=c(0.70,0.95)) + geom_smooth(method = "lm") + scale_size_identity()
+read_psych
+
+## plot performance by % of pages accessed
+
+dbs_psych <-  dbs[dbs$dataset=="ds863",]
+dbs_psych <- mutate(dbs_psych,quantile_nread=ntile(dbs_psych$percentPages,20))
+dbs_psych <- as.data.table(dbs_psych)
+
+dbs_psych_sum <- dbs_psych[,.(grade=mean(quizGrade),nread_avg=mean(percentPages)*100,n=.N),by=.(quantile_nread)]
+
+library(ggplot2)
+read_psych <- ggplot(data=dbs_psych_sum, aes(x=nread_avg, y=grade)) + geom_point(aes(size = n/100)) + theme_classic() + xlab("% of Pages Viewed") + ylab("Quiz Grade") + scale_linetype(name="Retention Interval Quintile") + scale_shape_discrete(name="Retention Interval Quintile") + theme(legend.justification=c(1,0), legend.position="none",plot.title = element_text(hjust = 0.5)) + ggtitle("Reading") + coord_cartesian(ylim=c(0.70,0.95)) + geom_smooth(method = "lm") + scale_size_identity()
+read_psych
+
+## Create plot with two panels (Do and Read)
+ggarrange(plotlist = list(activities_psych,read_psych),nrow=1,ncol=2)
+
+## Stats model comparing doing vs. no doing and reading vs. no reading
+summary(absolute_read <- lmer(zquizGrade ~ zpretestGrade+activity_group+read_group+(1|ds_anon_user_id)+(1|module),data = dbs[dbs$dataset=="ds863",]))
+
+mean(dbs$quizGrade[dbs$activity_group=="2_Activities"&dbs$dataset=="ds863"]); sd(dbs$quizGrade[dbs$activity_group=="2_Activities"&dbs$dataset=="ds863"])
+
+mean(dbs$quizGrade[dbs$activity_group=="1_No Activities"&dbs$dataset=="ds863"]); sd(dbs$quizGrade[dbs$activity_group=="1_No Activities"&dbs$dataset=="ds863"])
+
+mean(dbs$quizGrade[dbs$read_group=="2_Read"&dbs$dataset=="ds863"]); sd(dbs$quizGrade[dbs$read_group=="2_Read"&dbs$dataset=="ds863"])
+mean(dbs$quizGrade[dbs$read_group=="1_No Read"&dbs$dataset=="ds863"]); sd(dbs$quizGrade[dbs$read_group=="1_No Read"&dbs$dataset=="ds863"])
+
+## Stats model comparing dosage of doing and dosage of reading (including pretest as main effect and interaction with performance in the module)
+
+### With number of activities/pages
+dosage_pretestonly <- lmer(zquizGrade ~ zpretestGrade+(1|ds_anon_user_id)+(1|module),data = dbs[dbs$dataset=="ds863",])
+
+dosage_actiononly <- lmer(zquizGrade ~ zpretestGrade+zNAction+(1|ds_anon_user_id)+(1|module),data = dbs[dbs$dataset=="ds863",])
+
+dosage_readonly <- lmer(zquizGrade ~ zpretestGrade+zNRead_trimmed+(1|ds_anon_user_id)+(1|module),data = dbs[dbs$dataset=="ds863",])
+
+dosage_actionRead <- lmer(zquizGrade ~ zpretestGrade+zNAction+zNRead_trimmed+(1|ds_anon_user_id)+(1|module),data = dbs[dbs$dataset=="ds863",])
+
+dosage_actionRead_correctness <- lmer(zquizGrade ~ zpretestGrade+zcorrectness_alltries+zNAction+zNRead_trimmed+(1|ds_anon_user_id)+(1|module),data = dbs[dbs$dataset=="ds863",])
+
+anova(dosage_pretestonly,dosage_actiononly,dosage_readonly,dosage_actionRead,dosage_actionRead_correctness)
+
+anova(dosage_actionRead,dosage_actionRead_correctness)
+
+### With % of activities/pages
+dosage_actiononly <- lmer(zquizGrade ~ zpretestGrade+zpercentActivities+(1|ds_anon_user_id)+(1|module),data = dbs[dbs$dataset=="ds863",])
+
+dosage_readonly <- lmer(zquizGrade ~ zpretestGrade+zpercentPages+(1|ds_anon_user_id)+(1|module),data = dbs[dbs$dataset=="ds863",])
+
+dosage_actionRead <- lmer(zquizGrade ~ zpretestGrade+zpercentActivities+zpercentPages+(1|ds_anon_user_id)+(1|module),data = dbs[dbs$dataset=="ds863",])
+
+dosage_actionRead_correctness <- lmer(zquizGrade ~ zpretestGrade+zcorrectness_alltries+zpercentActivities+zpercentPages+(1|ds_anon_user_id)+(1|module),data = dbs[dbs$dataset=="ds863",])
+
+anova(dosage_pretestonly,dosage_actiononly,dosage_readonly,dosage_actionRead,dosage_actionRead_correctness)
+
+anova(dosage_actionRead,dosage_actionRead_correctness)
+
+summary(dosage_actionRead_correctness)
+
+### With time spent in activities/pages
+dosage_actiononly <- lmer(zquizGrade ~ zpretestGrade+logTimeAction+(1|ds_anon_user_id)+(1|module),data = dbs[dbs$dataset=="ds863",])
+
+dosage_readonly <- lmer(zquizGrade ~ zpretestGrade+logTimeReadTrimmed+(1|ds_anon_user_id)+(1|module),data = dbs[dbs$dataset=="ds863",])
+
+dosage_actionRead <- lmer(zquizGrade ~ zpretestGrade+logTimeAction+logTimeReadTrimmed+(1|ds_anon_user_id)+(1|module),data = dbs[dbs$dataset=="ds863",])
+
+dosage_actionRead_correctness <- lmer(zquizGrade ~ zpretestGrade+zcorrectness_alltries+logTimeAction+logTimeReadTrimmed+(1|ds_anon_user_id)+(1|module),data = dbs[dbs$dataset=="ds863",])
+
+#anova(dosage_pretestonly,dosage_actiononly,dosage_readonly,dosage_actionRead,dosage_actionRead_correctness)
+
+anova(dosage_actionRead,dosage_actionRead_correctness)
+
+summary(dosage_actionRead_correctness)
+```
+
+## Investigate characteristics of practice: why is it beneficial?
+```{r}
+## set things up
+psych_step <- fread("~/Google Drive/My Drive/Projects/Doer Effect paper analyses/datasets/transaction_logs/psych/ds863/ds863_student_step_All_Data_2287_2019_0803_061943.txt",check.names = TRUE)
+
+library(lubridate)
+psych_step$Step.Start.Time <- ymd_hms(psych_step$Step.Start.Time)
+
+psych_step <- setorder(psych_step,"Anon.Student.Id","KC..psychology.1.4.","Step.Start.Time")
+
+psych_step_unique <- psych_step[which(psych_step$Problem.View==1),]
+psych_step_repeated <- psych_step[!which(psych_step$Problem.View==1),]
+
+setDT(psych_step_unique)[, UniqueOpp := seq_len(.N)-1, by=rleid(Anon.Student.Id,KC..psychology.1.4.)]
+psych_step_unique$Opp <- psych_step_unique$UniqueOpp
+psych_step_unique$RepeatOpp <- NA
+
+setDT(psych_step_repeated)[, RepeatOpp := seq_len(.N), by=rleid(Anon.Student.Id,KC..psychology.1.4.,Step.Name)]
+psych_step_repeated$Opp <- psych_step_repeated$RepeatOpp
+psych_step_repeated$UniqueOpp <- NA
+psych_step_repeated$RepeatOpp <- as.numeric(psych_step_repeated$RepeatOpp)
+
+psych_step_fixed <- rbind(psych_step_unique,psych_step_repeated)
+
+psych_step_fixed <- setorder(psych_step_fixed,"Anon.Student.Id","KC..psychology.1.4.","Step.Start.Time")
+
+psych_step_fixed$RepeatOpp <- if_else(condition = psych_step_fixed$UniqueOpp==0,true = 0,false = c(psych_step_fixed$RepeatOpp),missing = psych_step_fixed$RepeatOpp)
+
+library(tidyverse)
+psych_step_fixed <- psych_step_fixed %>% tidyr::fill(UniqueOpp)
+psych_step_fixed <- psych_step_fixed %>% tidyr::fill(RepeatOpp)
+psych_step_fixed$ItemRepeats <- psych_step_fixed$Problem.View-1
+
+psych_step_fixed$correctness <- ifelse(psych_step_fixed$First.Attempt=="correct",1,0)
+
+psych_step_fixed$repetition <- ifelse(psych_step_fixed$RepeatOpp>1,"repeat","unique")
+
+module_info <- fread("OLI_start_attempt_week_mapping.txt",check.names = TRUE)
+names(module_info) <- make.names(c("Problem Name","module"))
+
+psych_step_module <- merge(psych_step_fixed,module_info)
+psych_step_module <- psych_step_module[-which(psych_step_module$module==100),]
+psych_step_module <- psych_step_module[which(psych_step_module$Anon.Student.Id%in%unique(dbs$ds_anon_user_id)),]
+
+sum_kc_doing <- psych_step_module[,.(nKCs=length(unique(KC..psychology.1.4.)),accuracy=mean(correctness),nProblems=length(unique(Problem.Name)),nActivities_unique=length(Row[repetition=="unique"]),nActivities_repeated=length(Row[repetition=="repeat"])),by=.(Anon.Student.Id,module)]
+
+sum_kc_doing <- ddply(.data = sum_kc_doing,.variables = .(module),.fun = mutate,MaxKCs = max(nKCs))
+
+sum_kc_doing$percentKCs <- sum_kc_doing$nKCs/sum_kc_doing$MaxKCs
+
+names(sum_kc_doing)[1] <- "ds_anon_user_id"
+dbs_psych_with_kc <- join(dbs_psych,sum_kc_doing)
+dbs_psych_with_kc$percentActivities <- ifelse(is.na(dbs_psych_with_kc$percentActivities),0,dbs_psych_with_kc$percentActivities)
+
+dbs_psych_with_kc$nActivities_unique <- ifelse(is.na(dbs_psych_with_kc$nActivities_unique),0,dbs_psych_with_kc$nActivities_unique)
+
+dbs_psych_with_kc$nActivities_repeated <- ifelse(is.na(dbs_psych_with_kc$nActivities_repeated),0,dbs_psych_with_kc$nActivities_repeated)
+
+dbs_psych_with_kc$nKCs <- ifelse(is.na(dbs_psych_with_kc$nKCs),0,dbs_psych_with_kc$nKCs)
+dbs_psych_with_kc$percentKCs <- ifelse(is.na(dbs_psych_with_kc$percentKCs),0,dbs_psych_with_kc$percentKCs)
+
+corr.test(dbs_psych_with_kc$percentActivities,dbs_psych_with_kc$percentKCs)
+
+dbs_psych_with_kc <- ddply(.data = dbs_psych_with_kc,.variables = .(module),.fun = ,mutate,zpercentKCs=scale(percentKCs),znActivities_unique=scale(nActivities_unique),znActivities_repeated=scale(nActivities_repeated))
+```
+
+### Is the benefit of practice related to greater coverage?
+```{r}
+# plot
+dbs_psych_with_kc <- ddply(.data = dbs_psych_with_kc,.variables = .(module),.fun = mutate,quantile_do=ntile(percentActivities,4),quantile_kc=ntile(percentKCs,4),quantile_read=ntile(percentPages,4))
+
+quantileSum_do <- ddply(.data = dbs_psych_with_kc,.variables = .(quantile_do),.fun = summarize,quizGrade=mean(quizGrade))
+
+quantileSum_kc <- ddply(.data = dbs_psych_with_kc,.variables = .(quantile_kc),.fun = summarize,quizGrade=mean(quizGrade))
+
+quantileSum_do$quantile_do <- quantileSum_do$quantile_do*25
+quantileSum_kc$quantile_kc <- quantileSum_kc$quantile_kc*25
+
+do <- ggplot(quantileSum_do, aes(x=quantile_do, y=quizGrade)) + geom_line()+
+  geom_point() + labs(title="Quiz performance by doing and coverage", x ="Quintile Activities Completed", y = "Quiz Grade") + theme_bw()
+do
+
+kc <- ggplot(quantileSum_kc, aes(x=quantile_kc, y=quizGrade)) + geom_line()+
+  geom_point() +labs(title="Quiz performance by doing and coverage", x ="Quintile Topics Covered", y = "Quiz Grade") + theme_bw()
+kc
+ 
+# stats
+coverage <- lmer(zquizGrade~zpretestGrade+zcorrectness_alltries+zpercentActivities+zpercentKCs+zpercentPages+(1|ds_anon_user_id)+(1|module),data=dbs_psych_with_kc)
+
+coverage_simplified <- lmer(zquizGrade~zpretestGrade+zpercentActivities+zpercentKCs+zpercentPages+(1|ds_anon_user_id)+(1|module),data=dbs_psych_with_kc)
+
+anova(coverage_simplified,coverage)
+
+summary(coverage)
+```
+
+### Is the benefit of practice related to more repetition of the same activities?
+```{r}
+# plot
+dbs_psych_with_kc <- ddply(.data = dbs_psych_with_kc,.variables = .(module),.fun = mutate,quantile_unique=ntile(nActivities_unique,4),quantile_repeated=ntile(nActivities_repeated,4))
+
+quantileSum <- ddply(.data = dbs_psych_with_kc,.variables = .(quantile_unique),.fun = summarize,quizGrade=mean(quizGrade))
+
+quantileSum$quantile_unique <- quantileSum$quantile_unique*25
+
+ggplot(quantileSum, aes(x=quantile_unique, y=quizGrade)) +
+  geom_line()+
+  geom_point()
+
+quantileSum <- ddply(.data = dbs_psych_with_kc,.variables = .(quantile_repeated),.fun = summarize,quizGrade=mean(quizGrade))
+
+quantileSum$quantile_repeated <- quantileSum$quantile_repeated*25
+
+ggplot(quantileSum, aes(x=quantile_repeated, y=quizGrade)) +
+  geom_line()+
+  geom_point()
+
+quantileSum <- ddply(.data = dbs_psych_with_kc,.variables = .(quantile_repeated,quantile_unique),.fun = summarize,quizGrade=mean(quizGrade))
+
+quantileSum$quantile_repeated <- quantileSum$quantile_repeated*25
+quantileSum$quantile_unique <- quantileSum$quantile_unique*25
+quantileSum$quantile_repeated <- as.factor(quantileSum$quantile_repeated)
+
+ggplot(quantileSum, aes(x=quantile_unique, y=quizGrade, group=quantile_repeated)) +
+  geom_line(aes(color=quantile_repeated))+
+  geom_point(aes(color=quantile_repeated)) + guides(colour=guide_legend(title="Quintile Repetition")) +labs(title="Quiz performance by repeated and unique activities",
+        x ="Quintile Unique Activities", y = "Quiz Grade") + theme_bw()
+
+# stats
+repetition_simplified <- lmer(zquizGrade~zpretestGrade+znActivities_unique*znActivities_repeated+zpercentKCs+zpercentPages+(1|ds_anon_user_id)+(1|module),data=dbs_psych_with_kc)
+
+repetition <- lmer(zquizGrade~zpretestGrade+zcorrectness_alltries+znActivities_unique*znActivities_repeated+zpercentKCs+zpercentPages+(1|ds_anon_user_id)+(1|module),data=dbs_psych_with_kc)
+
+anova(repetition_simplified,repetition)
+summary(repetition)
+```
+
+# STUDY 2: COMPUTING
+
+## What is the effect of completing more activities vs. viewing more pages?
+```{r}
+## plot performance by number of activities completed
+dbs_computing <-  dbs[!dbs$dataset=="ds863",]
+dbs_computing <- mutate(dbs_computing,quantile_naction=ntile(dbs_computing$NAction,10))
+dbs_computing <- as.data.table(dbs_computing)
+
+dbs_computing_sum <- dbs_computing[,.(grade=mean(quizGrade),naction_avg=mean(NAction),n=.N),by=.(quantile_naction)]
+
+activities_computing <- ggplot(data=dbs_computing_sum, aes(x=naction_avg, y=grade)) + geom_point(aes(size = n/25)) + theme_classic() + xlab("Number of Activities Completed") + ylab("Quiz Grade") + scale_linetype(name="Retention Interval Quintile") + scale_shape_discrete(name="Retention Interval Quintile") + theme(legend.justification=c(1,0), legend.position="none",plot.title = element_text(hjust = 0.5)) + ggtitle("Practice") + coord_cartesian(ylim=c(0.70,0.95)) + geom_smooth(method = "lm") + scale_size_identity()
+activities_psych
+
+## plot performance by % of activities completed
+dbs_computing <-  dbs[!dbs$dataset=="ds863",]
+dbs_computing <- mutate(dbs_computing,quantile_naction=ntile(dbs_computing$percentActivities,10))
+dbs_computing <- as.data.table(dbs_computing)
+
+dbs_computing_sum <- dbs_computing[,.(grade=mean(quizGrade),naction_avg=mean(percentActivities)*100,n=.N),by=.(quantile_naction)]
+
+activities_computing <- ggplot(data=dbs_computing_sum, aes(x=naction_avg, y=grade)) + geom_point(aes(size = n/25)) + theme_classic() + xlab("% Activities Completed") + ylab("Quiz Grade") + scale_linetype(name="Retention Interval Quintile") + scale_shape_discrete(name="Retention Interval Quintile") + theme(legend.justification=c(1,0), legend.position="none",plot.title = element_text(hjust = 0.5)) + ggtitle("Practice") + coord_cartesian(ylim=c(0.70,0.95)) + geom_smooth(method = "lm") + scale_size_identity()
+activities_computing
+
+## plot performance by number of pages accessed
+
+dbs_computing <-  dbs[!dbs$dataset=="ds863",]
+dbs_computing <- mutate(dbs_computing,quantile_nread=ntile(dbs_computing$NRead_trimmed,10))
+dbs_computing <- as.data.table(dbs_computing)
+
+dbs_computing_sum <- dbs_computing[,.(grade=mean(quizGrade),nread_avg=mean(NRead_trimmed),n=.N),by=.(quantile_nread)]
+
+library(ggplot2)
+read_computing <- ggplot(data=dbs_computing_sum, aes(x=nread_avg, y=grade)) + geom_point(aes(size = n/25)) + theme_classic() + xlab("Number of Pages Viewed") + ylab("Quiz Grade") + scale_linetype(name="Retention Interval Quintile") + scale_shape_discrete(name="Retention Interval Quintile") + theme(legend.justification=c(1,0), legend.position="none",plot.title = element_text(hjust = 0.5)) + ggtitle("Reading") + coord_cartesian(ylim=c(0.70,0.95)) + geom_smooth(method = "lm") + scale_size_identity()
+read_computing
+
+## plot performance by % of pages accessed
+dbs_computing <-  dbs[!dbs$dataset=="ds863",]
+dbs_computing <- mutate(dbs_computing,quantile_nread=ntile(dbs_computing$percentPages,10))
+dbs_computing <- as.data.table(dbs_computing)
+
+dbs_computing_sum <- dbs_computing[,.(grade=mean(quizGrade),nread_avg=mean(percentPages)*100,n=.N),by=.(quantile_nread)]
+
+library(ggplot2)
+read_computing <- ggplot(data=dbs_computing_sum, aes(x=nread_avg, y=grade)) + geom_point(aes(size = n/25)) + theme_classic() + xlab("% Pages Viewed") + ylab("Quiz Grade") + scale_linetype(name="Retention Interval Quintile") + scale_shape_discrete(name="Retention Interval Quintile") + theme(legend.justification=c(1,0), legend.position="none",plot.title = element_text(hjust = 0.5)) + ggtitle("Reading") + coord_cartesian(ylim=c(0.70,0.95)) + geom_smooth(method = "lm") + scale_size_identity()
+read_computing
+
+## Create plot with two panels (Do and Read)
+ggarrange(plotlist = list(activities_computing,read_computing),nrow=1,ncol=2)
+
+# Stats model comparing doing vs. no doing and reading vs. no reading
+summary(absolute_read <- lmer(zquizGrade ~ zpretestGrade+activity_group+read_group+(1|ds_anon_user_id)+(1|module),data = dbs[!dbs$dataset=="ds863",]))
+
+
+mean(dbs$quizGrade[dbs$activity_group=="2_Activities"&!dbs$dataset=="ds863"]); sd(dbs$quizGrade[dbs$activity_group=="2_Activities"&!dbs$dataset=="ds863"])
+
+mean(dbs$quizGrade[dbs$activity_group=="1_No Activities"&!dbs$dataset=="ds863"]); sd(dbs$quizGrade[dbs$activity_group=="1_No Activities"&!dbs$dataset=="ds863"])
+
+mean(dbs$quizGrade[dbs$read_group=="2_Read"&!dbs$dataset=="ds863"]); sd(dbs$quizGrade[dbs$read_group=="2_Read"&!dbs$dataset=="ds863"])
+
+mean(dbs$quizGrade[dbs$read_group=="1_No Read"&!dbs$dataset=="ds863"]); sd(dbs$quizGrade[dbs$read_group=="1_No Read"&!dbs$dataset=="ds863"])
+
+## Stats model comparing dosage of doing and dosage of reading (including pretest as main effect and interaction with performance in the module)
+
+### With number of activities/pages
+summary(dosage <- lmer(zquizGrade ~ zpretestGrade+zcorrectness_alltries+zNAction+zNRead_trimmed+(1|ds_anon_user_id)+(1|module),data = dbs[!dbs$dataset=="ds863",]))
+
+### With % of activities/pages
+summary(dosage <- lmer(zquizGrade ~ zpretestGrade+zcorrectness_alltries+zpercentActivities+zpercentPages+(1|ds_anon_user_id)+(1|module),data = dbs[!dbs$dataset=="ds863",]))
+
+### With time spent in activities/pages
+summary(dosage <- lmer(zquizGrade ~ zpretestGrade+zcorrectness_alltries+logtime_perDo+logtime_perPage+(1|ds_anon_user_id)+(1|module),data = dbs[!dbs$dataset=="ds863",]))
+
+## Stats model comparing dosage of doing and dosage of reading (including pretest as main effect and interaction with performance in the module AND pretest)
+
+### With number of activities/pages
+dosage_pretestonly <- lmer(zquizGrade ~ zpretestGrade+(1|ds_anon_user_id)+(1|module),data = dbs[!dbs$dataset=="ds863",])
+
+dosage_actiononly <- lmer(zquizGrade ~ zpretestGrade+zNAction+(1|ds_anon_user_id)+(1|module),data = dbs[!dbs$dataset=="ds863",])
+
+dosage_readonly <- lmer(zquizGrade ~ zpretestGrade+zNRead_trimmed+(1|ds_anon_user_id)+(1|module),data = dbs[!dbs$dataset=="ds863",])
+
+dosage_actionRead <- lmer(zquizGrade ~ zpretestGrade+zNAction+zNRead_trimmed+(1|ds_anon_user_id)+(1|module),data = dbs[!dbs$dataset=="ds863",])
+
+dosage_actionRead_correctness <- lmer(zquizGrade ~ zpretestGrade+zcorrectness_alltries+zNAction+zNRead_trimmed+(1|ds_anon_user_id)+(1|module),data = dbs[!dbs$dataset=="ds863",])
+
+anova(dosage_pretestonly,dosage_actiononly,dosage_readonly,dosage_actionRead,dosage_actionRead_correctness)
+
+anova(dosage_actionRead,dosage_actionRead_correctness)
+summary(dosage_actionRead_correctness)
+
+### With % of activities/pages
+dosage_actiononly <- lmer(zquizGrade ~ zpretestGrade+zpercentActivities+(1|ds_anon_user_id)+(1|module),data = dbs[!dbs$dataset=="ds863",])
+
+dosage_readonly <- lmer(zquizGrade ~ zpretestGrade+zpercentPages+(1|ds_anon_user_id)+(1|module),data = dbs[!dbs$dataset=="ds863",])
+
+dosage_actionRead <- lmer(zquizGrade ~ zpretestGrade+zpercentActivities+zpercentPages+(1|ds_anon_user_id)+(1|module),data = dbs[!dbs$dataset=="ds863",])
+
+dosage_actionRead_correctness <- lmer(zquizGrade ~ zpretestGrade+zcorrectness_alltries+zpercentActivities+zpercentPages+(1|ds_anon_user_id)+(1|module),data = dbs[!dbs$dataset=="ds863",])
+
+anova(dosage_pretestonly,dosage_actiononly,dosage_readonly,dosage_actionRead,dosage_actionRead_correctness)
+
+anova(dosage_actionRead,dosage_actionRead_correctness)
+summary(dosage_actionRead_correctness)
+
+### With time spent in activities/pages
+summary(dosage <- lmer(zquizGrade ~ zpretestGrade+zcorrectness_alltries+logtime_perPage+logtime_perDo+(1|ds_anon_user_id)+(1|module),data = dbs[!dbs$dataset=="ds863",]))
+```
+## Investigate characteristics of practice: why is it beneficial?
+```{r}
+## set things up
+#load transaction info
+
+c_cm_step <- fread("ds2033_student_step_All_Data_3802_2017_0319_041932_multiskill_converted.txt",check.names = TRUE)
+c_cm_step$dataset <- "ds2033"
+c_cm_step2 <- fread("ds490_student_step_All_Data_1586_2020_1118_065941.txt",check.names = TRUE)
+c_cm_step2$dataset <- "ds490"
+
+#c_cm_step <- fread("ds2033_student_step_no_post_6636_2020_1012_161834_multiskill_converted.txt",check.names = TRUE)
+c_cm_step <- rbind(c_cm_step,c_cm_step2[,c(1:22,29)])
+
+c_cm_step
+
+#c_cm_step <- c_cm_step[-which(c_cm_step$Problem.Name=="ccm_final_exam"),]
+
+library(lubridate)
+c_cm_step$Step.Start.Time <- ymd_hms(c_cm_step$Step.Start.Time)
+
+c_cm_step <- setorder(c_cm_step,"Anon.Student.Id","KC..LOv1.PVfixed.models.","Step.Start.Time")
+
+c_cm_step_unique <- c_cm_step[which(c_cm_step$Problem.View==1),]
+c_cm_step_repeated <- c_cm_step[!which(c_cm_step$Problem.View==1),]
+
+### add an item counter ###
+
+setDT(c_cm_step_unique)[, UniqueOpp := seq_len(.N)-1, by=rleid(Anon.Student.Id,KC..LOv1.PVfixed.models.)]
+c_cm_step_unique$Opp <- c_cm_step_unique$UniqueOpp
+c_cm_step_unique$RepeatOpp <- NA
+
+setDT(c_cm_step_repeated)[, RepeatOpp := seq_len(.N), by=rleid(Anon.Student.Id,KC..LOv1.PVfixed.models.,Step.Name)]
+c_cm_step_repeated$Opp <- c_cm_step_repeated$RepeatOpp
+c_cm_step_repeated$UniqueOpp <- NA
+c_cm_step_repeated$RepeatOpp <- as.numeric(c_cm_step_repeated$RepeatOpp)
+
+c_cm_step_fixed <- rbind(c_cm_step_unique,c_cm_step_repeated)
+
+c_cm_step_fixed <- setorder(c_cm_step_fixed,"Anon.Student.Id","KC..LOv1.PVfixed.models.","Step.Start.Time")
+
+c_cm_step_fixed$RepeatOpp <- if_else(condition = c_cm_step_fixed$UniqueOpp==0,true = 0,false = c(c_cm_step_fixed$RepeatOpp),missing = c_cm_step_fixed$RepeatOpp)
+
+library(tidyverse)
+c_cm_step_fixed <- c_cm_step_fixed %>% tidyr::fill(UniqueOpp)
+c_cm_step_fixed <- c_cm_step_fixed %>% tidyr::fill(RepeatOpp)
+c_cm_step_fixed$ItemRepeats <- c_cm_step_fixed$Problem.View-1
+
+c_cm_step_fixed$correctness <- ifelse(c_cm_step_fixed$First.Attempt=="correct",1,0)
+
+
+c_cm_step_fixed$repetition <- ifelse(c_cm_step_fixed$RepeatOpp>1,"repeat","unique")
+
+quizDatesTable_ds2033 <- fread("ds2033_quizDatesTable.csv",check.names = TRUE)
+names(quizDatesTable_ds2033)[1] <-  "Anon.Student.Id"
+
+quizDatesTable_ds490 <- fread("ds490_quizDatesTable.csv",check.names = TRUE)
+names(quizDatesTable_ds490)[1] <-  "Anon.Student.Id"
+
+quizDatesTable <- rbind(quizDatesTable_ds2033,quizDatesTable_ds490)
+
+quizDatesTable$pt1 <- ymd_hms(quizDatesTable$pt1)
+quizDatesTable$pt2 <- ymd_hms(quizDatesTable$pt2)
+quizDatesTable$pt3 <- ymd_hms(quizDatesTable$pt3)
+quizDatesTable$pt4 <- ymd_hms(quizDatesTable$pt4)
+quizDatesTable$quiz1 <- ymd_hms(quizDatesTable$quiz1)
+quizDatesTable$quiz2 <- ymd_hms(quizDatesTable$quiz2)
+quizDatesTable$quiz3 <- ymd_hms(quizDatesTable$quiz3)
+quizDatesTable$quiz4 <- ymd_hms(quizDatesTable$quiz4)
+quizDatesTable$exam <- ymd_hms(quizDatesTable$exam)
+
+c_cm_step_module <- join(c_cm_step_fixed,quizDatesTable)
+
+c_cm_step_module$module <- ifelse(c_cm_step_module$Step.Start.Time>c_cm_step_module$pt1&c_cm_step_module$Step.Start.Time<c_cm_step_module$quiz1,1,ifelse(c_cm_step_module$Step.Start.Time>c_cm_step_module$pt2&c_cm_step_module$Step.Start.Time<c_cm_step_module$quiz2,2,ifelse(c_cm_step_module$Step.Start.Time>c_cm_step_module$pt3&c_cm_step_module$Step.Start.Time<c_cm_step_module$quiz3,3,ifelse(c_cm_step_module$Step.Start.Time>c_cm_step_module$pt4&c_cm_step_module$Step.Start.Time<c_cm_step_module$quiz4,4,NA))))
+
+c_cm_step_module <- c_cm_step_module[which(c_cm_step_module$Anon.Student.Id%in%unique(dbs$ds_anon_user_id)),]
+
+c_cm_step_module <- c_cm_step_module[-which(is.na(c_cm_step_module$module)),]
+
+sum_kc_doing <- c_cm_step_module[,.(nKCs=length(unique(KC..LOv1.PVfixed.models.)),accuracy=mean(correctness),nProblems=length(unique(Problem.Name)),nActivities_unique=length(Row[repetition=="unique"]),nActivities_repeated=length(Row[repetition=="repeat"])),by=.(Anon.Student.Id,module)]
+
+sum_kc_doing <- ddply(.data = sum_kc_doing,.variables = .(module),.fun = mutate,MaxKCs = max(nKCs))
+
+sum_kc_doing$percentKCs <- sum_kc_doing$nKCs/sum_kc_doing$MaxKCs
+
+names(sum_kc_doing)[1] <- "ds_anon_user_id"
+dbs_computing_with_kc <- join(dbs_computing,sum_kc_doing) 
+
+dbs_computing_with_kc$percentActivities <- ifelse(is.na(dbs_computing_with_kc$percentActivities),0,dbs_computing_with_kc$percentActivities)
+
+dbs_computing_with_kc$nActivities_unique <- ifelse(is.na(dbs_computing_with_kc$nActivities_unique),0,dbs_computing_with_kc$nActivities_unique)
+
+dbs_computing_with_kc$nActivities_repeated <- ifelse(is.na(dbs_computing_with_kc$nActivities_repeated),0,dbs_computing_with_kc$nActivities_repeated)
+
+dbs_computing_with_kc$nKCs <- ifelse(is.na(dbs_computing_with_kc$nKCs),0,dbs_computing_with_kc$nKCs)
+
+dbs_computing_with_kc$percentKCs <- ifelse(is.na(dbs_computing_with_kc$percentKCs),0,dbs_computing_with_kc$percentKCs)
+
+corr.test(dbs_computing_with_kc$percentActivities,dbs_computing_with_kc$percentKCs)
+
+dbs_computing_with_kc <- ddply(.data = dbs_computing_with_kc,.variables = .(module),.fun = ,mutate,zpercentKCs=scale(percentKCs),znActivities_unique=scale(nActivities_unique),znActivities_repeated=scale(nActivities_repeated))
+```
+
+
+### Is the benefit of practice related to more repetition of the same activities?
+```{r}
+## analyses as for Study 1
+#plot
+dbs_computing_with_kc <- ddply(.data = dbs_computing_with_kc,.variables = .(module),.fun = mutate,quantile_unique=ntile(nActivities_unique,4),quantile_repeated=ntile(nActivities_repeated,4))
+
+quantileSum <- ddply(.data = dbs_computing_with_kc,.variables = .(quantile_unique),.fun = summarize,quizGrade=mean(quizGrade))
+
+quantileSum$quantile_unique <- quantileSum$quantile_unique*25
+
+ggplot(quantileSum, aes(x=quantile_unique, y=quizGrade)) +
+  geom_line()+
+  geom_point()
+
+quantileSum <- ddply(.data = dbs_computing_with_kc,.variables = .(quantile_repeated),.fun = summarize,quizGrade=mean(quizGrade))
+
+quantileSum$quantile_repeated <- quantileSum$quantile_repeated*25
+
+ggplot(quantileSum, aes(x=quantile_repeated, y=quizGrade)) +
+  geom_line()+
+  geom_point()
+
+quantileSum <- ddply(.data = dbs_computing_with_kc,.variables = .(quantile_repeated,quantile_unique),.fun = summarize,quizGrade=mean(quizGrade))
+
+quantileSum$quantile_repeated <- quantileSum$quantile_repeated*25
+quantileSum$quantile_unique <- quantileSum$quantile_unique*25
+quantileSum$quantile_repeated <- as.factor(quantileSum$quantile_repeated)
+
+ggplot(quantileSum, aes(x=quantile_unique, y=quizGrade, group=quantile_repeated)) +
+  geom_line(aes(color=quantile_repeated))+
+  geom_point(aes(color=quantile_repeated)) + guides(colour=guide_legend(title="Quintile Repetition")) +labs(title="Quiz performance by repeated and unique activities",
+        x ="Quintile Unique Activities", y = "Quiz Grade") + theme_bw()
+
+# stats
+repetition_simplified <- lmer(zquizGrade~zpretestGrade+znActivities_unique*znActivities_repeated+zpercentKCs+zpercentPages+(1|ds_anon_user_id),data=dbs_computing_with_kc)
+
+repetition <- lmer(zquizGrade~zpretestGrade+zcorrectness_alltries+znActivities_unique*znActivities_repeated+zpercentKCs+zpercentPages+(1|ds_anon_user_id),data=dbs_computing_with_kc)
+
+anova(repetition_simplified,repetition)
+
+summary(repetition)
+
+## Same analysis as above but at the KC level
+#get quiz data for each KC
+quizPerformanceData <- c_cm_step_fixed[Problem.Name%in%c("_u01_m01_metacog_quiz","_u02_exam_ready_quiz","_u03_exam_ready_quiz","_u04_exam_ready_quiz","_u05_exam_ready_quiz"),.(quizGrade=mean(correctness)),by=.(Anon.Student.Id,KC..LOv1.PVfixed.models.)]
+
+#quizPerformanceData <- ddply(.data = c_cm_step_fixed[c_cm_step_fixed$Problem.Name%in%c("_u01_m01_metacog_quiz","_u02_exam_ready_quiz","_u03_exam_ready_quiz","_u04_exam_ready_quiz","_u05_exam_ready_quiz"),],.variables = .(Anon.Student.Id,KC..LOv1.PVfixed.models.),.fun = summarize,quizGrade=mean(correctness))
+
+pretestPerformanceData <- c_cm_step_fixed[Problem.Name%in%c("_u02_m0_self_eval_a2-pt1","_u02_m0_self_eval_a2-pt3","_u02_m0_self_eval_a2-pt2","_u03_m0_self_eval_a2-pt1","_u03_m0_self_eval_a2-pt2","_u03_m0_self_eval_a2-pt3","_u04_m0_self_eval_a2-pt1","_u04_m0_self_eval_a2-pt2","_u04_m0_self_eval_a2-pt3","_u05_m0_self_eval_a2-pt1","_u05_m0_self_eval_a2-pt2","_u05_m0_self_eval_a2-pt3"),.(pretestGrade=mean(correctness)),by=.(Anon.Student.Id,KC..LOv1.PVfixed.models.)]
+
+#pretestPerformanceData <- ddply(.data = c_cm_step_fixed[c_cm_step_fixed$Problem.Name%in%c("_u02_m0_self_eval_a2-pt1","_u02_m0_self_eval_a2-pt3","_u02_m0_self_eval_a2-pt2","_u03_m0_self_eval_a2-pt1","_u03_m0_self_eval_a2-pt2","_u03_m0_self_eval_a2-pt3","_u04_m0_self_eval_a2-pt1","_u04_m0_self_eval_a2-pt2","_u04_m0_self_eval_a2-pt3","_u05_m0_self_eval_a2-pt1","_u05_m0_self_eval_a2-pt2","_u05_m0_self_eval_a2-pt3"),],.variables = .(Anon.Student.Id,KC..LOv1.PVfixed.models.),.fun = summarize,pretestGrade=mean(correctness))
+
+PerformanceData <- c_cm_step_fixed[!Problem.Name%in%c("_u02_m0_self_eval_a2-pt1","_u02_m0_self_eval_a2-pt3","_u02_m0_self_eval_a2-pt2","_u03_m0_self_eval_a2-pt1","_u03_m0_self_eval_a2-pt2","_u03_m0_self_eval_a2-pt3","_u04_m0_self_eval_a2-pt1","_u04_m0_self_eval_a2-pt2","_u04_m0_self_eval_a2-pt3","_u05_m0_self_eval_a2-pt1","_u05_m0_self_eval_a2-pt2","_u05_m0_self_eval_a2-pt3","_u01_m01_metacog_quiz","_u02_exam_ready_quiz","_u03_exam_ready_quiz","_u04_exam_ready_quiz","_u05_exam_ready_quiz"),.(activity_performance=mean(correctness)),by=.(Anon.Student.Id,KC..LOv1.PVfixed.models.)]
+
+examData <- c_cm_step_fixed[Problem.Name%in%c("ccm_final_exam"),.(ExamGrade=mean(correctness)),by=.(Anon.Student.Id,KC..LOv1.PVfixed.models.)]
+
+#examData <- ddply(.data = c_cm_step_fixed[c_cm_step_fixed$Problem.Name%in%c("ccm_final_exam"),],.variables = .(Anon.Student.Id,KC..LOv1.PVfixed.models.),.fun = summarize,ExamGrade=mean(correctness))
+
+activityData <- c_cm_step_module[!c_cm_step_module$Problem.Name%in%c("_u02_m0_self_eval_a2-pt1","_u02_m0_self_eval_a2-pt3","_u02_m0_self_eval_a2-pt2","_u03_m0_self_eval_a2-pt1","_u03_m0_self_eval_a2-pt2","_u03_m0_self_eval_a2-pt3","_u04_m0_self_eval_a2-pt1","_u04_m0_self_eval_a2-pt2","_u04_m0_self_eval_a2-pt3","_u05_m0_self_eval_a2-pt1","_u05_m0_self_eval_a2-pt2","_u05_m0_self_eval_a2-pt3","ccm_final_exam","_u01_m01_metacog_quiz","_u02_exam_ready_quiz","_u03_exam_ready_quiz","_u04_exam_ready_quiz","_u05_exam_ready_quiz"),.(nActivities_unique=length(Row[repetition=="unique"]),nActivities_repeated=length(Row[repetition=="repeat"]),activity_performance=mean(correctness)),by=.(Anon.Student.Id,KC..LOv1.PVfixed.models.)]
+
+#activityData <- ddply(.data = c_cm_step_module[!c_cm_step_module$Problem.Name%in%c("_u02_m0_self_eval_a2-pt1","_u02_m0_self_eval_a2-pt3","_u02_m0_self_eval_a2-pt2","_u03_m0_self_eval_a2-pt1","_u03_m0_self_eval_a2-pt2","_u03_m0_self_eval_a2-pt3","_u04_m0_self_eval_a2-pt1","_u04_m0_self_eval_a2-pt2","_u04_m0_self_eval_a2-pt3","_u05_m0_self_eval_a2-pt1","_u05_m0_self_eval_a2-pt2","_u05_m0_self_eval_a2-pt3","ccm_final_exam","_u01_m01_metacog_quiz","_u02_exam_ready_quiz","_u03_exam_ready_quiz","_u04_exam_ready_quiz","_u05_exam_ready_quiz"),],.variables = .(Anon.Student.Id,KC..LOv1.PVfixed.models.),.fun = summarize,nActivities_unique=length(Row[repetition=="unique"]),nActivities_repeated=length(Row[repetition=="repeat"]))
+
+dbs_c_cm_kc_level <- join(quizPerformanceData,pretestPerformanceData)
+dbs_c_cm_kc_level <- join(dbs_c_cm_kc_level,activityData)
+dbs_c_cm_kc_level <- join(dbs_c_cm_kc_level,examData)
+
+dbs_c_cm_kc_level <- dbs_c_cm_kc_level[dbs_c_cm_kc_level$Anon.Student.Id%in%dbs_computing_with_kc$ds_anon_user_id,]
+
+dbs_c_cm_kc_level <- dbs_c_cm_kc_level[complete.cases(dbs_c_cm_kc_level),]
+
+# plot
+dbs_c_cm_kc_level <- ddply(.data = dbs_c_cm_kc_level,.variables = .(KC..LOv1.PVfixed.models.),.fun = mutate,quantile_unique=ntile(nActivities_unique,4),quantile_repeated=ntile(nActivities_repeated,4))
+
+quantileSum <- ddply(.data = dbs_c_cm_kc_level,.variables = .(quantile_repeated,quantile_unique),.fun = summarize,quizGrade=mean(quizGrade))
+
+quantileSum$quantile_repeated <- quantileSum$quantile_repeated*25
+quantileSum$quantile_unique <- quantileSum$quantile_unique*25
+quantileSum$quantile_repeated <- as.factor(quantileSum$quantile_repeated)
+
+ggplot(quantileSum[!is.na(quantileSum$quantile_unique),], aes(x=quantile_unique, y=quizGrade, group=quantile_repeated)) +
+  geom_line(aes(color=quantile_repeated))+
+  geom_point(aes(color=quantile_repeated)) + guides(colour=guide_legend(title="Quintile Repetition")) +labs(title="Quiz performance by repeated and unique activities",
+        x ="Quintile Unique Activities", y = "Quiz Grade") + theme_bw()
+
+# stats
+repetition_simplified <- lmer(scale(quizGrade)~scale(pretestGrade)+scale(nActivities_unique)*scale(nActivities_repeated)+(1|Anon.Student.Id)+(1|KC..LOv1.PVfixed.models.),data=dbs_c_cm_kc_level)
+
+repetition <- lmer(scale(quizGrade)~scale(pretestGrade)+scale(activity_performance)+scale(nActivities_unique)*scale(nActivities_repeated)+(1|Anon.Student.Id)+(1|KC..LOv1.PVfixed.models.),data=dbs_c_cm_kc_level)
+
+anova(repetition_simplified,repetition)
+summary(repetition)
+
+
+###
+
+```
+
+# TABLES
+## Psych
+```{r}
+dbs_psych_with_kc <- as.data.table(dbs_psych_with_kc)
+
+Psych_N_module <- dbs_psych_with_kc[,.(Nstudents =length(unique(ds_anon_user_id)),Nstudents_activity=length(unique(ds_anon_user_id[NAction>0])),Nstudents_pages=length(unique(ds_anon_user_id[NRead_trimmed>0])),nstudents_pages_activities=length(unique(ds_anon_user_id[NRead_trimmed>0&NAction>0])),Nstudents_rep_act=length(unique(ds_anon_user_id[repeated_activities>0])),Nstudents_rep_pages=length(unique(ds_anon_user_id[repeated_pages>0]))),by=.(module)]
+Psych_N_module
+
+n_modules_student <- dbs_psych_with_kc[,.(nmodules=length(unique(module)),activities=mean(NAction),pages=mean(NRead_trimmed),repeated=mean(repeated_activities),act_avail=mean(available_activities),available_pages=mean(available_pages)),by=.(ds_anon_user_id)]
+
+n_modules <- n_modules_student[,.(N=.N,activities=mean(activities),pages=mean(pages),repeated=mean(repeated),act_avail=mean(act_avail),available_pages=mean(available_pages)),by=.(nmodules)]
+
+Psych_usage_averages <- dbs_psych_with_kc[,.(activities =mean(NAction),repeated_activities=mean(repeated_activities),pages=mean(NRead_trimmed),reapted_pages=mean(repeated_pages),mean_kcs=mean(nKCs),pretest=mean(pretestGrade),quiz=mean(quizGrade)),by=.(module)]
+Psych_usage_averages
+
+Psych_available <- dbs_psych_with_kc[,.(activities =mean(available_activities),pages=mean(available_pages),kcs=mean(MaxKCs,na.rm=T)),by=.(module)]
+
+Psych_available
+
+p<-ggplot(data=Psych_available, aes(x=module, y=activities)) +
+  geom_bar(stat="identity") +labs(title="Number of Available Activities", x ="Module", y = "# Activities") + theme_bw()
+p
+```
+
+## Computing
+```{r}
+dbs_computing_with_kc <- as.data.table(dbs_computing_with_kc)
+
+computing_N_module <- dbs_computing_with_kc[,.(Nstudents =length(unique(ds_anon_user_id)),Nstudents_activity=length(unique(ds_anon_user_id[NAction>0])),Nstudents_pages=length(unique(ds_anon_user_id[NRead_trimmed>0])),nstudents_pages_activities=length(unique(ds_anon_user_id[NRead_trimmed>0&NAction>0])),Nstudents_rep_act=length(unique(ds_anon_user_id[repeated_activities>0])),Nstudents_rep_pages=length(unique(ds_anon_user_id[repeated_pages>0]))),by=.(module)]
+computing_N_module
+
+computing_usage_averages <- dbs_computing_with_kc[,.(activities =mean(NAction),repeated_activities=mean(repeated_activities),pages=mean(NRead_trimmed),reapted_pages=mean(repeated_pages),mean_kcs=mean(nKCs),pretest=mean(pretestGrade),quiz=mean(quizGrade)),by=.(module)]
+computing_usage_averages
+
+computing_available <- dbs_computing_with_kc[,.(activities =mean(available_activities),pages=mean(available_pages),kcs=mean(MaxKCs,na.rm=T)),by=.(module)]
+computing_available
+```
