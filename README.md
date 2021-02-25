@@ -1,4 +1,4 @@
-# testing-effect-big-data
+# practice-testing-big-data
 Practice Testing Big Data Analyses
 
 This repostiory includes the summarized raw data and analyses for the paper "Varied practice testing is associated with better learning outcomes in self-regulated online learning"
