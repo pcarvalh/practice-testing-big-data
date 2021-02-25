@@ -1,6 +1,6 @@
 # testing-effect-big-data
-Testing Effect Big Data Analyses
+Practice Testing Big Data Analyses
 
-This repostiory includes the summarized raw data and analyses for the paper "The testing effect goes to big-data school: Varied practice is associated with better transfer in online learning."
+This repostiory includes the summarized raw data and analyses for the paper "Varied practice testing is associated with better learning outcomes in self-regulated online learning"
 
 Raw data can be found in Datashop (https://pslcdatashop.web.cmu.edu/), datasets 490, 863, and 2033.
