@@ -81,7 +81,7 @@ describe(dbs)
 describeBy(x = dbs,group = dbs$domain)
 describeBy(x = dbs,group = dbs$dataset)
 descriptivesPsych <- describe(dbs[dbs$domain=="psych",])
-descriptivesComputing <- describe(dbs[dbs$domain=="computing",])
+descriptivesComputing <- describe(dbs[dbs$domain=="c@cm",])
 
 write.csv(descriptivesPsych,file = "DescriptivesPsych.csv",row.names = TRUE)
 write.csv(descriptivesComputing,file = "DescriptivesComputing.csv",row.names = TRUE)
